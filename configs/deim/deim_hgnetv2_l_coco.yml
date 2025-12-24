@@ -5,19 +5,39 @@ __include__: [
 
 output_dir: ./outputs/deim_hgnetv2_l_coco
 
+# optimizer:
+#   type: AdamW
+#   params: 
+#     - 
+#       params: '^(?=.*backbone)(?!.*norm|bn).*$'
+#       lr: 0.000025
+#     - 
+#       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
+#       weight_decay: 0.
+
+#   lr: 0.0005
+#   betas: [0.9, 0.999]
+#   weight_decay: 0.000125
 optimizer:
   type: AdamW
-  params: 
-    - 
+  params:
+    -
       params: '^(?=.*backbone)(?!.*norm|bn).*$'
-      lr: 0.000025
-    - 
+      lr: 0.000025  # doubled, linear scaling law
+    -
       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn)).*$'
       weight_decay: 0.
 
-  lr: 0.0005
-  betas: [0.9, 0.999]
-  weight_decay: 0.000125
+lr: 0.0005  # doubled, linear scaling law
+betas: [0.9, 0.999]
+weight_decay: 0.0001  # need a grid search
+
+ema:  # added EMA settings
+    decay: 0.9998  # adjusted by 1 - (1 - decay) * 2
+    warmups: 500  # halved
+
+lr_warmup_scheduler:
+    warmup_duration: 250  # halved
   
 # Increase to search for the optimal ema
 epoches: 58 # 72 + 2n
