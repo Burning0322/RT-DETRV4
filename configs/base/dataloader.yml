@@ -24,7 +24,7 @@ train_dataloader:
 
   shuffle: True
 #  total_batch_size: 32 # total batch size equals to 32 (4 * 8)
-  total_batch_size: 4
+  total_batch_size: 2
   num_workers: 4
 
 
