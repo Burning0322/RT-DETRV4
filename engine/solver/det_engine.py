@@ -39,6 +39,128 @@ def _compute_encoder_transformer_grad_percentage(model: torch.nn.Module) -> floa
     return 100.0 * enc_l1 / total_l1
 
 
+# def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, criterion: torch.nn.Module,
+#                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
+#                     device: torch.device, epoch: int, max_norm: float = 0, **kwargs):
+#     model.train()
+#     criterion.train()
+#     metric_logger = MetricLogger(delimiter="  ")
+#     metric_logger.add_meter('lr', SmoothedValue(window_size=1, fmt='{value:.6f}'))
+#     header = 'Epoch: [{}]'.format(epoch)
+#
+#     print_freq = kwargs.get('print_freq', 10)
+#     writer :SummaryWriter = kwargs.get('writer', None)
+#
+#     ema :ModelEMA = kwargs.get('ema', None)
+#     scaler :GradScaler = kwargs.get('scaler', None)
+#     lr_warmup_scheduler :Warmup = kwargs.get('lr_warmup_scheduler', None)
+#
+#     # Gradient Analysis
+#     encoder_grad_percentages = []
+#     cur_iters = epoch * len(data_loader)
+#
+#     teacher_model = kwargs.get('teacher_model', None)
+#
+#     for i, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+#         samples = samples.to(device)
+#         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+#         global_step = epoch * len(data_loader) + i
+#         metas = dict(epoch=epoch, step=i, global_step=global_step, epoch_step=len(data_loader))
+#
+#         teacher_encoder_output_for_distillation = None
+#         if teacher_model is not None:
+#             with torch.no_grad():
+#                 teacher_encoder_output_for_distillation = teacher_model(samples).detach()
+#
+#         if scaler is not None:
+#             with torch.autocast(device_type=str(device), cache_enabled=True):
+#                 outputs = model(samples, targets=targets,
+#                                 teacher_encoder_output=teacher_encoder_output_for_distillation)
+#
+#             if torch.isnan(outputs['pred_boxes']).any() or torch.isinf(outputs['pred_boxes']).any():
+#                 print(outputs['pred_boxes'])
+#                 state = model.state_dict()
+#                 new_state = {}
+#                 for key, value in model.state_dict().items():
+#                     new_key = key.replace('module.', '')
+#                     state[new_key] = value
+#                 new_state['model'] = state
+#                 dist_utils.save_on_master(new_state, "./NaN.pth")
+#
+#             with torch.autocast(device_type=str(device), enabled=False):
+#                 loss_dict = criterion(outputs, targets, **metas)
+#
+#             loss = sum(loss_dict.values())
+#             scaler.scale(loss).backward()
+#
+#             if max_norm > 0:
+#                 scaler.unscale_(optimizer)
+#                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+#
+#             # Collect gradient
+#             if dist_utils.is_main_process() and hasattr(criterion, 'distill_adaptive_params') and \
+#                getattr(criterion, 'distill_adaptive_params') and \
+#                criterion.distill_adaptive_params.get('enabled', False):
+#                 pct = _compute_encoder_transformer_grad_percentage(model)
+#                 encoder_grad_percentages.append(pct)
+#
+#             scaler.step(optimizer)
+#             scaler.update()
+#             optimizer.zero_grad()
+#
+#         else:
+#             outputs = model(samples, targets=targets,
+#                             teacher_encoder_output=teacher_encoder_output_for_distillation) # NEW kwarg
+#             loss_dict = criterion(outputs, targets, **metas)
+#
+#             loss : torch.Tensor = sum(loss_dict.values())
+#             optimizer.zero_grad()
+#             loss.backward()
+#
+#             # Collect gradient
+#             if dist_utils.is_main_process() and hasattr(criterion, 'distill_adaptive_params') and \
+#                getattr(criterion, 'distill_adaptive_params') and \
+#                criterion.distill_adaptive_params.get('enabled', False):
+#                 pct = _compute_encoder_transformer_grad_percentage(model)
+#                 encoder_grad_percentages.append(pct)
+#
+#             if max_norm > 0:
+#                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+#
+#             optimizer.step()
+#
+#         # ema
+#         if ema is not None:
+#             ema.update(model)
+#
+#         if self_lr_scheduler:
+#             optimizer = lr_scheduler.step(cur_iters + i, optimizer)
+#         else:
+#             if lr_warmup_scheduler is not None:
+#                 lr_warmup_scheduler.step()
+#
+#         loss_dict_reduced = dist_utils.reduce_dict(loss_dict)
+#         loss_value = sum(loss_dict_reduced.values())
+#
+#         if not math.isfinite(loss_value):
+#             print("Loss is {}, stopping training".format(loss_value))
+#             print(loss_dict_reduced)
+#             sys.exit(1)
+#
+#         metric_logger.update(loss=loss_value, **loss_dict_reduced)
+#         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+#
+#         if writer and dist_utils.is_main_process() and global_step % 10 == 0:
+#             writer.add_scalar('Loss/total', loss_value.item(), global_step)
+#             for j, pg in enumerate(optimizer.param_groups):
+#                 writer.add_scalar(f'Lr/pg_{j}', pg['lr'], global_step)
+#             for k, v in loss_dict_reduced.items():
+#                 writer.add_scalar(f'Loss/{k}', v.item(), global_step)
+#
+#     # gather the stats from all processes
+#     metric_logger.synchronize_between_processes()
+#     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, encoder_grad_percentages
+
 def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0, **kwargs):
@@ -49,17 +171,24 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
     header = 'Epoch: [{}]'.format(epoch)
 
     print_freq = kwargs.get('print_freq', 10)
-    writer :SummaryWriter = kwargs.get('writer', None)
+    writer: SummaryWriter = kwargs.get('writer', None)
 
-    ema :ModelEMA = kwargs.get('ema', None)
-    scaler :GradScaler = kwargs.get('scaler', None)
-    lr_warmup_scheduler :Warmup = kwargs.get('lr_warmup_scheduler', None)
+    ema: ModelEMA = kwargs.get('ema', None)
+    scaler: GradScaler = kwargs.get('scaler', None)
+    lr_warmup_scheduler: Warmup = kwargs.get('lr_warmup_scheduler', None)
 
     # Gradient Analysis
     encoder_grad_percentages = []
     cur_iters = epoch * len(data_loader)
 
     teacher_model = kwargs.get('teacher_model', None)
+
+    # ==============================================================
+    # 【修改 1】定义累加步数
+    # 如果你的 batch_size=4，想要达到 total_batch_size=32 的效果，这里填 8
+    # 公式： Accumulation_Steps = 目标Batch (32) / 物理Batch (4)
+    ACCUM_STEPS = 8
+    # ==============================================================
 
     for i, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         samples = samples.to(device)
@@ -72,6 +201,7 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
             with torch.no_grad():
                 teacher_encoder_output_for_distillation = teacher_model(samples).detach()
 
+        # -------------------- 分支 A: 使用混合精度 (AMP) --------------------
         if scaler is not None:
             with torch.autocast(device_type=str(device), cache_enabled=True):
                 outputs = model(samples, targets=targets,
@@ -91,48 +221,79 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
                 loss_dict = criterion(outputs, targets, **metas)
 
             loss = sum(loss_dict.values())
+
+            # 【修改 2】Loss 除以累加步数 (AMP模式)
+            loss = loss / ACCUM_STEPS
+
             scaler.scale(loss).backward()
 
-            if max_norm > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            # 【修改 3】只有达到累加次数时，才更新参数
+            if (i + 1) % ACCUM_STEPS == 0:
 
-            # Collect gradient
-            if dist_utils.is_main_process() and hasattr(criterion, 'distill_adaptive_params') and \
-               getattr(criterion, 'distill_adaptive_params') and \
-               criterion.distill_adaptive_params.get('enabled', False):
-                pct = _compute_encoder_transformer_grad_percentage(model)
-                encoder_grad_percentages.append(pct)
+                # =======================================================
+                # 【验证代码】加这一句！
+                print(f"  >>> Step {i}: 正在更新参数 (Accumulated {ACCUM_STEPS} steps) <<<")
+                # =======================================================
 
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
+                if max_norm > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
+                # Collect gradient (只在更新时收集)
+                if dist_utils.is_main_process() and hasattr(criterion, 'distill_adaptive_params') and \
+                        getattr(criterion, 'distill_adaptive_params') and \
+                        criterion.distill_adaptive_params.get('enabled', False):
+                    pct = _compute_encoder_transformer_grad_percentage(model)
+                    encoder_grad_percentages.append(pct)
+
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+                # EMA 更新也应该在参数更新后进行
+                if ema is not None:
+                    ema.update(model)
+
+        # -------------------- 分支 B: 不使用混合精度 (FP32) --------------------
         else:
             outputs = model(samples, targets=targets,
-                            teacher_encoder_output=teacher_encoder_output_for_distillation) # NEW kwarg
+                            teacher_encoder_output=teacher_encoder_output_for_distillation)
             loss_dict = criterion(outputs, targets, **metas)
 
-            loss : torch.Tensor = sum(loss_dict.values())
-            optimizer.zero_grad()
+            loss: torch.Tensor = sum(loss_dict.values())
+
+            # 【修改 4】Loss 除以累加步数 (普通模式)
+            loss = loss / ACCUM_STEPS
+
+            # 注意：这里删除了原来这行的 optimizer.zero_grad()，因为我们要累积梯度
             loss.backward()
 
-            # Collect gradient
-            if dist_utils.is_main_process() and hasattr(criterion, 'distill_adaptive_params') and \
-               getattr(criterion, 'distill_adaptive_params') and \
-               criterion.distill_adaptive_params.get('enabled', False):
-                pct = _compute_encoder_transformer_grad_percentage(model)
-                encoder_grad_percentages.append(pct)
+            # 【修改 5】只有达到累加次数时，才更新参数
+            if (i + 1) % ACCUM_STEPS == 0:
 
-            if max_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+                # =======================================================
+                # 【验证代码】加这一句！
+                print(f"  >>> Step {i}: 正在更新参数 (Accumulated {ACCUM_STEPS} steps) <<<")
+                # =======================================================
 
-            optimizer.step()
+                # Collect gradient
+                if dist_utils.is_main_process() and hasattr(criterion, 'distill_adaptive_params') and \
+                        getattr(criterion, 'distill_adaptive_params') and \
+                        criterion.distill_adaptive_params.get('enabled', False):
+                    pct = _compute_encoder_transformer_grad_percentage(model)
+                    encoder_grad_percentages.append(pct)
 
-        # ema
-        if ema is not None:
-            ema.update(model)
+                if max_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
+                optimizer.step()
+                optimizer.zero_grad()  # 更新完清空梯度
+
+                # EMA 更新
+                if ema is not None:
+                    ema.update(model)
+
+        # 学习率调度器 (保持每次迭代更新，影响不大)
         if self_lr_scheduler:
             optimizer = lr_scheduler.step(cur_iters + i, optimizer)
         else:
